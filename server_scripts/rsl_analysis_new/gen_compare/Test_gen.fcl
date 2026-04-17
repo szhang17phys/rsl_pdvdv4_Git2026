@@ -1,0 +1,195 @@
+#include "services_dune.fcl"
+#include "services_vdcoldbox.fcl"
+#include "singles_dune.fcl"
+#include "services_protodunevd.fcl"
+
+#include "services_refactored_pdune.fcl"
+#include "LArG4_dune.fcl"
+
+#include "IonAndScint_dune.fcl"
+#include "PDFastSim_dune.fcl"
+
+
+#include "largeantmodules_dune.fcl"
+#include "detsimmodules_dune.fcl"
+#include "mccheatermodules.fcl"
+#include "photpropservices_dune.fcl"
+#include "opticaldetectormodules_dune.fcl"
+
+#include "dune_radiological_model.fcl"
+
+#module generating single particles is called SingleGen---
+process_name: SinglesGen
+
+services:
+{
+  #change------
+  TFileService: { fileName: "./gen_e67_noRadio_hist.root" } #naming output root file---
+  
+  TimeTracker:       {}
+  MemoryTracker:         { } # default is one;
+  RandomNumberGenerator: {} #ART native random number generator
+  FileCatalogMetadata: @local::art_file_catalog_mc
+  @table::protodunevd_services
+
+  message: @local::standard_info
+  @table::protodunevd_larg4_services
+  NuRandomService: @local::dune_prod_seedservice
+
+  @table::protodunevd_refactored_simulation_services
+#  backtrackerservice:       @local::standard_backtrackerservice
+}
+
+#load the geometry; Shu; 20230209---
+services.Geometry.GDML: "protodunevd_v4_refactored.gdml"
+services.Geometry.Name: "protodunevd_v4_refactored"
+services.Geometry.ROOT: "protodunevd_v4_refactored.gdml"
+
+
+services.PhotonVisibilityService: {
+    DoNotLoadLibrary: true
+    UseCryoBoundary:  true
+
+    NX: 5 #5cm voxels filling (-425, 364)cm---
+    NY: 5 #5cm voxels filling (-427, 427)cm---
+    NZ: 5 #5cm voxels filling (-277, 577)cm---
+}
+
+
+services.LArG4Parameters.UseCustomPhysics: true
+# Fast simulation is 'FastOptical' option.
+# Full simulation is 'Optical' option.
+services.LArG4Parameters.EnabledPhysics: [ "Em",
+                                           "FastOptical",
+                                           "SynchrotronAndGN",
+                                           "Ion",
+                                           "Hadron",
+                                           "Decay",
+                                           "HadronElastic",
+                                           "Stopping",
+                                           "NeutronTrackingCut" ]
+
+
+#Suggested by Mu, 20220217---
+ScintTimeLAr:
+{
+  tool_type: ScintTimeLAr
+  LogLevel:       1
+  FastRisingTime: 0.0     #rise ...
+  FastDecayTime:  6.0     #decay ...
+  SlowRisingTime: 0.0     #rise time of ...
+  SlowDecayTime:  1600.0  #decay time of low scintillation light---
+}
+
+
+#AllPhotons/ScintPreScale =  real AllPhotons, 20231002---
+services.LArPropertiesService.ScintPreScale: 0.05
+#20231002---
+services.OpDetResponseInterface.QuantumEfficiency: 0.03
+
+
+#Test E field on/off,20231021---
+services.DetectorPropertiesService.Efield: [0.5, 6.66e-1, 8e-1]
+
+services.LArG4Detector.gdmlFileName_: "protodunevd_v4_refactored.gdml"
+
+source:
+{
+  module_type: EmptyEvent #starting with an empty events---
+  timestampPlugin: { plugin_type: "GeneratedEventTimestamp"}
+  maxEvents:  100 #default maximal events to generate---
+  firstRun:   1   #run number (label) to use for this file---
+  firstEvent: 1   #number of first event in the file---
+}
+
+
+# Define and configure some modules to do work on each event---
+physics:
+{
+ producers:
+ {
+   generator: 
+   {
+     module_type:             "CRTGenPdvd"
+     Mode:                    0
+     EnergyDistribution:      0 #0: Uniform; 1: Corsika---
+     EnergyRange:             [6, 7] #GeV, 6~7---
+     CRT_TOP_center:          [384.8, 588.2, 149.6] #(384.8, 588.2, 149.6)cm---
+     CRT_BOT_center:          [-440.8, -588.2, 149.6] #(-440.8, -588.2, 149.6)cm---
+     CRTSizeX:                112 #cm, 112---
+     CRTSizeY:                0
+     CRTSizeZ:                144 #cm, 144---
+     BufferLengthOnCRTBottom: 0.0 #cm---
+   }
+   
+   largeant:    @local::protodune_larg4
+   rns:         { module_type: "RandomNumberSaver" }
+   IonAndScint: @local::protodunevd_ionandscint
+
+   PDFastSimAr: @local::protodune_vd_pdfastsim_pvs
+#   {
+#      module_type:      "PDFastSimANN"
+#      SimulationLabel:  "IonAndScint"
+#      DoSlowComponent:  true
+#      ScintTimeTool:    @local::ScintTimeLAr
+#      TFLoaderTool:
+#      {
+#          tool_type:    TFLoaderMLP
+#          ModelName:    "./rsl99_abs20_best_module"
+#          InputsName:   ["serving_default_pos_x:0", "serving_default_pos_y:0", "serving_default_pos_z:0"]
+#          OutputName:   "StatefulPartitionedCall:0"
+#      }
+#   }
+   
+ }
+
+
+ analyzers: #perform analysis on the ROOT file---
+ {
+   XAresponse: #XArapuca response; Shu, 20230308---
+   {
+     module_type:             "SimPhotonCounter"
+     Verbosity:               1
+     InputModule:             "PDFastSimAr"
+     MakeAllPhotonsTree:      true
+     MakeDetectedPhotonsTree: true
+     MakeOpDetsTree:          true
+     MakeOpDetsTree:          true
+     MakeOpDetEventsTree:     true
+   }
+   TrajCut:
+   {
+     module_type: CRTTrajectoryCut
+     GEANT4Label : "largeant"
+     fSIGNLabel:  "generator"
+   }
+ }
+
+
+ #define the producer and filter modules for this path---
+ simulate: [ generator, largeant, rns, IonAndScint, PDFastSimAr ]
+ analyzeIt:  [ XAresponse, TrajCut ]
+ 
+ #define the output stream, there could be more than one if using filters---
+# stream1:  [ out1 ]
+
+ trigger_paths: [simulate] 
+
+# end_paths:     [analyzeIt, stream1]  
+ end_paths:     [analyzeIt]  
+
+}
+
+
+
+outputs:
+{
+ out1:
+ {
+#   module_type: RootOutput
+#   #default file name, can override from command line with -o;---
+#   fileName: "./results/CRT_3numNew.root" #change------
+#   dataTier: "generated"
+ }
+}
+
